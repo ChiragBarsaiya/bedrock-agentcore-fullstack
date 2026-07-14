@@ -1,0 +1,41 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# CDK build outputs
+cdk.out*/
+*.d.ts
+*.js.map
+
+# Frontend build
+dist/
+.env.local
+.env.production.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# AWS credentials / secrets
+.env
+*.pem
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code config (not for public repos)
+.claude/
+CLAUDE.md
+
+# Backup files
+*.backup
+
+# Deployed build artifacts with embedded config
+deployed-index.js
+
+# Local package lock files (optional, keep if preferred)
+# package-lock.json

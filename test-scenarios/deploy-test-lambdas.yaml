@@ -1,0 +1,335 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DevOps Agent Demo - Test Lambda Functions for Incident Simulation'
+
+Parameters:
+  ErrorRate:
+    Type: Number
+    Default: 30
+    MinValue: 0
+    MaxValue: 100
+    Description: Percentage of requests that should generate errors (0-100)
+
+Resources:
+  # IAM Role for Lambda functions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+
+  # Lambda Function 1: Error Simulator
+  ErrorSimulatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: demo-error-simulator
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          ERROR_RATE: !Ref ErrorRate
+      Code:
+        ZipFile: |
+          import json
+          import random
+          import time
+          from datetime import datetime
+          import os
+
+          def lambda_handler(event, context):
+              error_rate = int(os.environ.get('ERROR_RATE', '30'))
+
+              scenario = 'success'
+              if random.randint(1, 100) <= error_rate:
+                  scenario = random.choice(['database', 'timeout', 'memory', 'api', 'exception'])
+
+              print(f"[INFO] Processing request at {datetime.utcnow().isoformat()}")
+              print(f"[INFO] Scenario: {scenario}")
+
+              if scenario == 'database':
+                  print("[ERROR] Database connection failed to demo-db.us-east-1.rds.amazonaws.com")
+                  return {'statusCode': 500, 'body': json.dumps({'error': 'DatabaseConnectionError'})}
+              elif scenario == 'timeout':
+                  print("[ERROR] External API call timed out after 30 seconds")
+                  time.sleep(2)
+                  return {'statusCode': 504, 'body': json.dumps({'error': 'GatewayTimeout'})}
+              elif scenario == 'memory':
+                  print("[ERROR] MemoryError: Cannot allocate array - insufficient memory")
+                  return {'statusCode': 500, 'body': json.dumps({'error': 'MemoryError'})}
+              elif scenario == 'api':
+                  print("[ERROR] Validation failed: Missing required field 'user_id'")
+                  return {'statusCode': 400, 'body': json.dumps({'error': 'ValidationError'})}
+              elif scenario == 'exception':
+                  raise ValueError("User not found: user_id 12345 does not exist")
+              else:
+                  print("[INFO] Request processed successfully")
+                  return {'statusCode': 200, 'body': json.dumps({'status': 'success'})}
+
+  # Lambda Function 2: High Memory Consumer
+  HighMemoryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: demo-high-memory
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Code:
+        ZipFile: |
+          import json
+          import random
+          from datetime import datetime
+
+          def lambda_handler(event, context):
+              print(f"[INFO] Starting memory-intensive operation at {datetime.utcnow().isoformat()}")
+
+              # Simulate memory usage by creating large lists
+              try:
+                  data = []
+                  for i in range(100000):
+                      data.append({'id': i, 'value': 'x' * 1000})
+
+                  if random.random() > 0.7:
+                      print("[WARN] Memory usage at 85% - approaching limit")
+                      # Create even more data to potentially hit memory limit
+                      more_data = [x * 2 for x in range(1000000)]
+
+                  print("[INFO] Memory operation completed successfully")
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({'processed_items': len(data)})
+                  }
+              except MemoryError as e:
+                  print(f"[ERROR] MemoryError: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': 'OutOfMemory'})
+                  }
+
+  # Lambda Function 3: Slow Response
+  SlowResponseFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: demo-slow-response
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json
+          import time
+          import random
+          from datetime import datetime
+
+          def lambda_handler(event, context):
+              delay = random.uniform(2.0, 8.0)
+              print(f"[INFO] Request received at {datetime.utcnow().isoformat()}")
+              print(f"[WARN] Simulating slow database query - expected delay: {delay:.2f}s")
+
+              time.sleep(delay)
+
+              if delay > 5.0:
+                  print(f"[ERROR] Query exceeded 5 second threshold - actual: {delay:.2f}s")
+                  print("[ERROR] Slow query detected - consider adding database index")
+              else:
+                  print(f"[INFO] Query completed in {delay:.2f}s")
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'duration': delay,
+                      'timestamp': datetime.utcnow().isoformat()
+                  })
+              }
+
+  # Lambda Function 4: API Gateway Integration
+  ApiErrorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: demo-api-errors
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json
+          import random
+          from datetime import datetime
+
+          def lambda_handler(event, context):
+              print(f"[INFO] API request received: {json.dumps(event)}")
+
+              # Randomly generate different HTTP errors
+              error_type = random.choice(['400', '401', '403', '404', '500', '502', '503', 'success'])
+
+              if error_type == '400':
+                  print("[ERROR] Bad Request - Invalid JSON payload")
+                  return {'statusCode': 400, 'body': json.dumps({'error': 'BadRequest', 'message': 'Invalid JSON'})}
+              elif error_type == '401':
+                  print("[ERROR] Unauthorized - Invalid API key")
+                  return {'statusCode': 401, 'body': json.dumps({'error': 'Unauthorized'})}
+              elif error_type == '403':
+                  print("[ERROR] Forbidden - Insufficient permissions")
+                  return {'statusCode': 403, 'body': json.dumps({'error': 'Forbidden'})}
+              elif error_type == '404':
+                  print("[ERROR] Not Found - Resource does not exist")
+                  return {'statusCode': 404, 'body': json.dumps({'error': 'NotFound'})}
+              elif error_type == '500':
+                  print("[ERROR] Internal Server Error - Unexpected exception")
+                  raise Exception("Unexpected internal error occurred")
+              elif error_type == '502':
+                  print("[ERROR] Bad Gateway - Upstream service unavailable")
+                  return {'statusCode': 502, 'body': json.dumps({'error': 'BadGateway'})}
+              elif error_type == '503':
+                  print("[ERROR] Service Unavailable - System overloaded")
+                  return {'statusCode': 503, 'body': json.dumps({'error': 'ServiceUnavailable'})}
+              else:
+                  print("[INFO] Request processed successfully")
+                  return {'statusCode': 200, 'body': json.dumps({'status': 'ok'})}
+
+  # EventBridge Rule to trigger functions every 5 minutes
+  ErrorSimulatorSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger error simulator every 5 minutes for demo
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ErrorSimulatorFunction.Arn
+          Id: ErrorSimulatorTarget
+
+  SlowResponseSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger slow response function every 5 minutes for demo
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SlowResponseFunction.Arn
+          Id: SlowResponseTarget
+
+  ApiErrorSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger API error function every 5 minutes for demo
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ApiErrorFunction.Arn
+          Id: ApiErrorTarget
+
+  # Permissions for EventBridge to invoke Lambda
+  ErrorSimulatorInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ErrorSimulatorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ErrorSimulatorSchedule.Arn
+
+  SlowResponseInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SlowResponseFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SlowResponseSchedule.Arn
+
+  ApiErrorInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiErrorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ApiErrorSchedule.Arn
+
+  # CloudWatch Alarms
+  ErrorSimulatorErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: demo-error-simulator-high-errors
+      AlarmDescription: Alert when error simulator has high error rate
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ErrorSimulatorFunction
+
+  SlowResponseDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: demo-slow-response-high-duration
+      AlarmDescription: Alert when function duration is too high
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SlowResponseFunction
+
+Outputs:
+  ErrorSimulatorFunctionArn:
+    Description: ARN of the Error Simulator Lambda function
+    Value: !GetAtt ErrorSimulatorFunction.Arn
+    Export:
+      Name: DemoErrorSimulatorArn
+
+  ErrorSimulatorLogGroup:
+    Description: CloudWatch Log Group for Error Simulator
+    Value: !Sub '/aws/lambda/${ErrorSimulatorFunction}'
+
+  SlowResponseFunctionArn:
+    Description: ARN of the Slow Response Lambda function
+    Value: !GetAtt SlowResponseFunction.Arn
+
+  SlowResponseLogGroup:
+    Description: CloudWatch Log Group for Slow Response
+    Value: !Sub '/aws/lambda/${SlowResponseFunction}'
+
+  ApiErrorFunctionArn:
+    Description: ARN of the API Error Lambda function
+    Value: !GetAtt ApiErrorFunction.Arn
+
+  ApiErrorLogGroup:
+    Description: CloudWatch Log Group for API Errors
+    Value: !Sub '/aws/lambda/${ApiErrorFunction}'
+
+  HighMemoryFunctionArn:
+    Description: ARN of the High Memory Lambda function
+    Value: !GetAtt HighMemoryFunction.Arn
+
+  DeploymentInstructions:
+    Description: How to deploy this stack
+    Value: 'Deploy with: aws cloudformation create-stack --stack-name devops-agent-demo-lambdas --template-body file://deploy-test-lambdas.yaml --capabilities CAPABILITY_IAM'
